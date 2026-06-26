@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# VS Code
+.vscode/
+
+# Local environment and secrets
+.env
+.env.*
+
+# Generated business data and run artifacts
+runs/
+data/incoming/
+data/reference/
+data/processed/
+data/archive/
+context_dumps/
+logs/
+*.log
+
+# Excel workbooks and temporary Office files
+*.xlsx
+*.xls
+*.xlsm
+~$*
+
+# OS clutter
+.DS_Store
+Thumbs.db

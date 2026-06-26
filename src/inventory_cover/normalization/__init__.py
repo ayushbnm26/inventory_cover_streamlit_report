@@ -1,0 +1,1 @@
+"""Row normalization logic."""
