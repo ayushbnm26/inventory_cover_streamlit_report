@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Iterable
+from zipfile import ZIP_DEFLATED, ZipFile
+import xml.etree.ElementTree as ET
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -68,7 +70,7 @@ def write_team_workbook(
         wb = Workbook()
         report_ws = wb.active
         report_ws.title = "Inventory_Cover_Report"
-        _write_report_sheet(report_ws, products, "InventoryCoverReportTable", config, with_formulas=False)
+        _write_report_sheet(report_ws, products, "InventoryCoverReportTable", config, with_formulas=True)
 
         formula_ws = wb.create_sheet("Formula_Audit")
         _write_report_sheet(formula_ws, products, "InventoryCoverFormulaAuditTable", config, with_formulas=True)
@@ -95,6 +97,10 @@ def write_team_workbook(
 
         _enable_recalculation(wb)
         wb.save(temp_path)
+        _inject_cached_formula_values(
+            temp_path,
+            {"Inventory_Cover_Report": _formula_cached_values(products, config)},
+        )
         temp_path.replace(output_path)
     except Exception as exc:  # noqa: BLE001
         if temp_path.exists():
@@ -344,6 +350,104 @@ def _enable_recalculation(wb: Workbook) -> None:
     calculation.forceFullCalc = True
 
 
+def _formula_cached_values(products: list[ProductCoverRow], config: Any) -> dict[str, Any]:
+    """Return cached values for formula cells in the visible report sheet."""
+
+    headers = list(TEAM_REPORT_HEADERS)
+    window = int(config.sales_window_days)
+    default_target = float(config.default_target_doh)
+    cache: dict[str, Any] = {}
+    for row_index, product in enumerate(products, start=2):
+        for col_index, header in enumerate(headers, start=1):
+            if F.formula_for(header, window, default_target) is None:
+                continue
+            cache[f"{get_column_letter(col_index)}{row_index}"] = product.team_value(header)
+    return cache
+
+
+def _inject_cached_formula_values(workbook_path: Path, sheet_values: dict[str, dict[str, Any]]) -> None:
+    """Embed cached formula results without removing formulas.
+
+    openpyxl can write formulas, but it does not calculate and store their
+    cached results. Some viewers show such cells as blank. This patches the
+    worksheet XML so formula cells keep their formulas and also carry the
+    Python mirror value as the cached result.
+    """
+
+    if not sheet_values:
+        return
+    replacement_path = workbook_path.with_suffix(workbook_path.suffix + ".cached")
+    try:
+        with ZipFile(workbook_path, "r") as source:
+            sheet_paths = _workbook_sheet_paths(source)
+            patch_by_path = {
+                sheet_paths[sheet_name]: values
+                for sheet_name, values in sheet_values.items()
+                if sheet_name in sheet_paths and values
+            }
+            if not patch_by_path:
+                return
+            with ZipFile(replacement_path, "w", ZIP_DEFLATED) as target:
+                for item in source.infolist():
+                    data = source.read(item.filename)
+                    values = patch_by_path.get(item.filename)
+                    if values is not None:
+                        data = _patch_worksheet_cached_values(data, values)
+                    target.writestr(item, data)
+        replacement_path.replace(workbook_path)
+    finally:
+        replacement_path.unlink(missing_ok=True)
+
+
+def _workbook_sheet_paths(workbook_zip: ZipFile) -> dict[str, str]:
+    workbook_ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+    rel_ns = "http://schemas.openxmlformats.org/package/2006/relationships"
+    office_rel_ns = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    workbook_root = ET.fromstring(workbook_zip.read("xl/workbook.xml"))
+    rel_root = ET.fromstring(workbook_zip.read("xl/_rels/workbook.xml.rels"))
+    rels = {
+        rel.attrib["Id"]: rel.attrib["Target"]
+        for rel in rel_root.findall(f"{{{rel_ns}}}Relationship")
+    }
+    paths: dict[str, str] = {}
+    for sheet in workbook_root.findall(f".//{{{workbook_ns}}}sheet"):
+        rel_id = sheet.attrib.get(f"{{{office_rel_ns}}}id")
+        if not rel_id or rel_id not in rels:
+            continue
+        target = rels[rel_id]
+        paths[sheet.attrib["name"]] = target.lstrip("/") if target.startswith("/") else f"xl/{target}"
+    return paths
+
+
+def _patch_worksheet_cached_values(sheet_xml: bytes, values: dict[str, Any]) -> bytes:
+    sheet_ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+    ET.register_namespace("", sheet_ns)
+    root = ET.fromstring(sheet_xml)
+    formula_tag = f"{{{sheet_ns}}}f"
+    value_tag = f"{{{sheet_ns}}}v"
+    inline_tag = f"{{{sheet_ns}}}is"
+    cell_tag = f"{{{sheet_ns}}}c"
+
+    for cell in root.iter(cell_tag):
+        reference = cell.attrib.get("r")
+        if reference not in values or cell.find(formula_tag) is None:
+            continue
+        for existing in list(cell.findall(value_tag)):
+            cell.remove(existing)
+        for existing in list(cell.findall(inline_tag)):
+            cell.remove(existing)
+        cached = values[reference]
+        value = ET.Element(value_tag)
+        if isinstance(cached, str):
+            cell.set("t", "str")
+            value.text = cached
+        else:
+            cell.attrib.pop("t", None)
+            value.text = "" if cached is None else str(cached)
+        cell.append(value)
+    return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
+
 def _safe_table(name: str) -> str:
     return "".join(ch for ch in name if ch.isalnum())
 
@@ -421,9 +525,9 @@ def build_formula_guide_rows(
          "raw source values are preserved in backend audit sheets.",
          "Calculations never break on blank inputs."],
         ["Policy", "Visible values and formula audit",
-         "Inventory_Cover_Report contains ready-to-read calculated values; hidden Formula_Audit contains the same rows with Excel formulas.",
+         "Inventory_Cover_Report contains Excel formulas with cached results; hidden Formula_Audit repeats the formula view.",
          "This prevents blank-looking formula cells in previewers or Excel sessions that have not recalculated the file yet.",
-         "The team can read the report immediately, while formulas remain available for audit."],
+         "The team can read the report immediately and inspect formulas directly in the main sheet."],
         ["Formula", "Sales Days",
          F.sales_days_formula(window),
          f"Sales Days = MIN({window}, period end - start + 1). If period is missing but sales exist, {window} is used.",

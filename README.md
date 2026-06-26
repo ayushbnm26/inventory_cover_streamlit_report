@@ -85,7 +85,7 @@ Pipeline 3 is backend-only. It does not create a team-facing workbook and does n
 
 ### Pipeline 4: Final Inventory Cover Calculation Engine
 
-Pipeline 4 reads the latest backend artifacts of Pipelines 1-3, builds a product-level universe (keyed by ASIN, falling back to Model Number / SKU), calculates inventory cover, and writes two professional workbooks. The visible team report is written with ready-to-read calculated values so it does not appear blank in Excel previewers or sessions that have not recalculated formulas yet. The team workbook also includes a hidden `Formula_Audit` sheet with the same rows and Excel formulas for traceability.
+Pipeline 4 reads the latest backend artifacts of Pipelines 1-3, builds a product-level universe (keyed by ASIN, falling back to Model Number / SKU), calculates inventory cover, and writes two professional workbooks. The visible team report contains Excel formulas in the calculation cells and also embeds cached calculated results, so it does not appear blank in Excel previewers or sessions that have not recalculated formulas yet. The team workbook also includes a hidden `Formula_Audit` sheet with the same formula view for traceability.
 
 Source latest files consumed (interface contract):
 
@@ -138,7 +138,7 @@ Formula_Guide
 Run_Metadata
 ```
 
-Formula logic (visible as values in the main report and engraved into `Formula_Audit`, all divide-by-zero safe):
+Formula logic (engraved into the main report cells and `Formula_Audit`, all divide-by-zero safe):
 
 ```text
 Sales Days              = MIN(window, Sales Period End - Sales Period Start + 1)  (window default 30)

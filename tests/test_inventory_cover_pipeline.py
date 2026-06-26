@@ -322,7 +322,7 @@ def test_raw_source_not_overwritten(tmp_path: Path) -> None:
     assert before == after
 
 
-def test_team_cells_have_values_and_formula_audit_keeps_formulas(tmp_path: Path) -> None:
+def test_team_cells_have_formulas_with_cached_values(tmp_path: Path) -> None:
     config = make_sources(
         tmp_path,
         sales_rows=[_full_window_sales("A1", 30)],
@@ -333,11 +333,14 @@ def test_team_cells_have_values_and_formula_audit_keeps_formulas(tmp_path: Path)
     assert rows[0]["Daily Run Rate"] == pytest.approx(1.0)
     assert rows[0]["Current Stock DOH"] == pytest.approx(100.0)
 
-    drr = _formula_cell(result.team_output_file, "Formula_Audit", "Daily Run Rate")
+    drr = _formula_cell(result.team_output_file, "Inventory_Cover_Report", "Daily Run Rate")
     assert isinstance(drr, str) and drr.startswith("=") and "Sales Days" in drr
     for header in ("Current Stock DOH", "Total Supply Cover DOH", "Cover Bucket", "Gap to Target Units"):
-        formula = _formula_cell(result.team_output_file, "Formula_Audit", header)
+        formula = _formula_cell(result.team_output_file, "Inventory_Cover_Report", header)
         assert isinstance(formula, str) and formula.startswith("=")
+
+    audit_drr = _formula_cell(result.team_output_file, "Formula_Audit", "Daily Run Rate")
+    assert isinstance(audit_drr, str) and audit_drr.startswith("=")
 
 
 def test_no_sales_product_in_annexure(tmp_path: Path) -> None:

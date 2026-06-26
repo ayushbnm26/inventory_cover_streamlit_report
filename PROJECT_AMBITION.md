@@ -25,6 +25,6 @@ The final report calculates and explains inventory health using metrics such as:
 - Cover bucket and cover alert flags.
 - Backend data quality flags and team remarks.
 
-Pipeline 4 implements these calculations. The visible team workbook is written with calculated values so it is readable immediately, and it keeps the formula version in a hidden Formula_Audit sheet for traceability. It also ships annexure sheets per cover bucket, a Formula_Guide, and a Source_Summary without backend-only diagnostic clutter. A backend audit workbook adds data quality flags, full source-row traceability, a calculation audit, validation issues, and run metadata.
+Pipeline 4 implements these calculations. The visible team workbook engraves formulas into the calculation cells and embeds cached results so it is readable immediately. It also keeps a hidden Formula_Audit sheet for traceability, plus annexure sheets per cover bucket, a Formula_Guide, and a Source_Summary without backend-only diagnostic clutter. A backend audit workbook adds data quality flags, full source-row traceability, a calculation audit, validation issues, and run metadata.
 
 Future enhancements may add demand forecasting, recommended PO quantity, and lead-time modelling on top of this engine.
