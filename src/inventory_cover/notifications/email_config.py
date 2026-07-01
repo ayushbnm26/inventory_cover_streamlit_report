@@ -29,6 +29,7 @@ class EmailDeliveryConfig:
     bcc: tuple[str, ...]
     reply_to: str
     subject_prefix: str
+    dashboard_url: str = ""
     validation_errors: tuple[str, ...] = ()
 
     @classmethod
@@ -63,6 +64,7 @@ class EmailDeliveryConfig:
             bcc=_parse_recipients(values.get("REPORT_EMAIL_BCC")),
             reply_to=_clean(values.get("REPORT_EMAIL_REPLY_TO")),
             subject_prefix=_clean(values.get("REPORT_EMAIL_SUBJECT_PREFIX")) or "Inventory Cover Report",
+            dashboard_url=_clean(values.get("INVENTORY_DASHBOARD_URL")),
             validation_errors=tuple(validation_errors),
         )
 

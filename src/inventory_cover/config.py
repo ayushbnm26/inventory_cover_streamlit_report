@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+from typing import Mapping
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -212,3 +213,89 @@ class InventoryCoverPipelineConfig:
             inventory_staleness_days=self.inventory_staleness_days,
             log_level=self.log_level,
         )
+
+
+@dataclass(frozen=True)
+class GoogleDriveReportConfig:
+    """Optional Google Drive latest-report publishing settings."""
+
+    project_root: Path = PROJECT_ROOT
+    enabled: bool = False
+    folder_id: str = ""
+    service_account_json_path: Path = PROJECT_ROOT / "secrets" / "google_drive" / "service_account.json"
+    service_account_json: str = ""
+    report_file_name: str = "Inventory_Cover_Report_latest.xlsx"
+    audit_file_name: str = "Inventory_Cover_Backend_Audit_latest.xlsx"
+    upload_audit: bool = False
+    fail_on_upload_error: bool = False
+    scopes: tuple[str, ...] = ("https://www.googleapis.com/auth/drive",)
+
+    def resolved(self) -> "GoogleDriveReportConfig":
+        """Return a copy with filesystem paths resolved against the project root."""
+
+        def resolve(path: Path) -> Path:
+            path = Path(path)
+            if path.is_absolute():
+                return path
+            return (self.project_root / path).resolve()
+
+        return GoogleDriveReportConfig(
+            project_root=Path(self.project_root).resolve(),
+            enabled=self.enabled,
+            folder_id=self.folder_id,
+            service_account_json_path=resolve(self.service_account_json_path),
+            service_account_json=self.service_account_json,
+            report_file_name=self.report_file_name,
+            audit_file_name=self.audit_file_name,
+            upload_audit=self.upload_audit,
+            fail_on_upload_error=self.fail_on_upload_error,
+            scopes=tuple(self.scopes),
+        )
+
+
+def google_drive_report_config_from_values(
+    values: Mapping[str, str],
+    *,
+    project_root: Path = PROJECT_ROOT,
+) -> GoogleDriveReportConfig:
+    """Build Google Drive report config from environment-style key/value pairs."""
+
+    default = GoogleDriveReportConfig(project_root=project_root)
+    return GoogleDriveReportConfig(
+        project_root=project_root,
+        enabled=_parse_config_bool(values.get("GDRIVE_ENABLED"), default=default.enabled),
+        folder_id=_clean_config_value(values.get("GDRIVE_FOLDER_ID")),
+        service_account_json_path=Path(
+            _clean_config_value(values.get("GDRIVE_SERVICE_ACCOUNT_JSON_PATH"))
+            or Path("secrets") / "google_drive" / "service_account.json"
+        ),
+        service_account_json=_clean_config_value(values.get("GDRIVE_SERVICE_ACCOUNT_JSON")),
+        report_file_name=(
+            _clean_config_value(values.get("GDRIVE_REPORT_FILE_NAME")) or default.report_file_name
+        ),
+        audit_file_name=(
+            _clean_config_value(values.get("GDRIVE_AUDIT_FILE_NAME")) or default.audit_file_name
+        ),
+        upload_audit=_parse_config_bool(values.get("GDRIVE_UPLOAD_AUDIT"), default=default.upload_audit),
+        fail_on_upload_error=_parse_config_bool(
+            values.get("GDRIVE_FAIL_ON_UPLOAD_ERROR"),
+            default=default.fail_on_upload_error,
+        ),
+        scopes=default.scopes,
+    ).resolved()
+
+
+def _clean_config_value(value: object) -> str:
+    return "" if value is None else str(value).strip()
+
+
+def _parse_config_bool(value: object, *, default: bool) -> bool:
+    text = _clean_config_value(value)
+    if not text:
+        return default
+    lowered = text.lower()
+    if lowered in {"1", "true", "yes", "y", "on"}:
+        return True
+    if lowered in {"0", "false", "no", "n", "off"}:
+        return False
+    return default

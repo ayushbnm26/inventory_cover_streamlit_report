@@ -12,6 +12,7 @@ from openpyxl import Workbook
 from inventory_cover.cli import main as cli_main
 from inventory_cover.config import InventoryCoverPipelineConfig
 from inventory_cover.inventory_cover_schemas import InventoryCoverPipelineRunResult, SOURCE_SUMMARY_HEADERS
+from inventory_cover.io.google_drive_report_store import GoogleDriveUploadSummary
 from inventory_cover.notifications import (
     EmailConfigError,
     EmailDeliveryConfig,
@@ -137,6 +138,35 @@ def test_email_message_includes_subject_recipients_body_and_attachment(tmp_path:
     assert attachments[0].get_filename() == "Inventory_Cover_Report_RUN123.xlsx"
 
 
+def test_email_body_excludes_dashboard_url_when_unset(tmp_path: Path) -> None:
+    attachment = tmp_path / "Inventory_Cover_Report_RUN123.xlsx"
+    attachment.write_bytes(b"workbook-bytes")
+    context = _email_context(attachment, tmp_path)
+    config = EmailDeliveryConfig.from_environment(env=_email_env(), env_file=None)
+
+    message = build_email_message(context, config, mail_timestamp="2026-06-27T10:01:00+05:30")
+    body = message.get_body(preferencelist=("plain",)).get_content()
+
+    assert "Dashboard view:" not in body
+    assert "read-only visual summary" not in body
+
+
+def test_email_body_includes_dashboard_url_when_set(tmp_path: Path) -> None:
+    attachment = tmp_path / "Inventory_Cover_Report_RUN123.xlsx"
+    attachment.write_bytes(b"workbook-bytes")
+    context = _email_context(attachment, tmp_path)
+    config = EmailDeliveryConfig.from_environment(
+        env=_email_env(dashboard_url="https://inventory-cover.streamlit.app"),
+        env_file=None,
+    )
+
+    message = build_email_message(context, config, mail_timestamp="2026-06-27T10:01:00+05:30")
+    body = message.get_body(preferencelist=("plain",)).get_content()
+
+    assert "Dashboard view: https://inventory-cover.streamlit.app" in body
+    assert "attached Excel workbook remains the official working report" in body
+
+
 def test_attachment_must_exist_before_sending(tmp_path: Path) -> None:
     result = _fake_pipeline_result(tmp_path, attachment_exists=False)
     config = EmailDeliveryConfig.from_environment(env=_email_env(password=""), env_file=None)
@@ -150,7 +180,11 @@ def test_attachment_must_exist_before_sending(tmp_path: Path) -> None:
     assert audit["attachment_exists"] is False
 
 
-def test_cli_without_email_flag_creates_no_notification_artifacts(tmp_path: Path) -> None:
+def test_cli_without_email_flag_creates_no_notification_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GDRIVE_ENABLED", "false")
     config = _make_inventory_cover_sources(tmp_path)
 
     rc = cli_main(_inventory_cover_cli_args(config))
@@ -162,6 +196,7 @@ def test_cli_without_email_flag_creates_no_notification_artifacts(tmp_path: Path
 
 
 def test_cli_send_email_dry_run_writes_audit_metadata(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GDRIVE_ENABLED", "false")
     config = _make_inventory_cover_sources(tmp_path)
     for key, value in _email_env(password="").items():
         monkeypatch.setenv(key, value)
@@ -177,6 +212,35 @@ def test_cli_send_email_dry_run_writes_audit_metadata(tmp_path: Path, monkeypatc
     assert audit["report_context"]["sales_period_start"] == "2024-05-01"
     assert audit["report_context"]["sales_report_updated_date"] == "2024-05-31"
     assert "SMTP_PASSWORD" not in json.dumps(audit)
+
+
+def test_cli_drive_upload_is_config_gated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = _make_inventory_cover_sources(tmp_path)
+    calls: dict[str, Any] = {}
+
+    def fake_upload(result: InventoryCoverPipelineRunResult, drive_config: Any) -> GoogleDriveUploadSummary:
+        calls["enabled"] = drive_config.enabled
+        calls["folder_id"] = drive_config.folder_id
+        calls["team_latest_exists"] = result.team_latest_file.exists()
+        return GoogleDriveUploadSummary(
+            run_id=result.run_id,
+            enabled=True,
+            status="SUCCESS",
+            audit_file=result.run_dir / "notifications" / "google_drive_upload.json",
+            log_file=result.run_dir / "logs" / "google_drive_upload.log",
+            started_at="2026-07-01T10:00:00+05:30",
+            completed_at="2026-07-01T10:00:01+05:30",
+            duration_seconds=1.0,
+        )
+
+    monkeypatch.setenv("GDRIVE_ENABLED", "true")
+    monkeypatch.setenv("GDRIVE_FOLDER_ID", "folder123")
+    monkeypatch.setattr("inventory_cover.cli.upload_inventory_cover_reports_to_drive", fake_upload)
+
+    rc = cli_main(_inventory_cover_cli_args(config))
+
+    assert rc == 0
+    assert calls == {"enabled": True, "folder_id": "folder123", "team_latest_exists": True}
 
 
 def test_smtp_failure_writes_failure_audit_without_deleting_workbook(tmp_path: Path) -> None:
@@ -234,6 +298,7 @@ def _email_env(
     username: str = "<smtp-username-placeholder>",
     password: str = "<smtp-password-placeholder>",
     cc: str = "",
+    dashboard_url: str = "",
 ) -> dict[str, str]:
     return {
         "SMTP_HOST": "smtp.example.com",
@@ -249,7 +314,32 @@ def _email_env(
         "REPORT_EMAIL_BCC": "",
         "REPORT_EMAIL_REPLY_TO": "",
         "REPORT_EMAIL_SUBJECT_PREFIX": "Inventory Cover Report",
+        "INVENTORY_DASHBOARD_URL": dashboard_url,
     }
+
+
+def _email_context(attachment: Path, tmp_path: Path) -> EmailReportContext:
+    return EmailReportContext(
+        run_id="RUN123",
+        generated_at="2026-06-27T10:00:00+05:30",
+        product_count=2,
+        validation_issue_count=1,
+        warning_count=1,
+        team_workbook_path=attachment,
+        backend_workbook_path=tmp_path / "Inventory_Cover_Backend_Audit_RUN123.xlsx",
+        report_context={
+            "sales_period_start": "2026-06-01",
+            "sales_period_end": "2026-06-26",
+            "sales_report_updated_date": "2026-06-26",
+            "inventory_period_start": "Not available",
+            "inventory_period_end": "2026-06-26",
+            "inventory_report_updated_date": "2026-06-26",
+            "b2b_dispatch_as_of_date": "2026-06-26",
+            "b2b_dispatch_lookback_start": "2026-06-25",
+            "b2b_dispatch_lookback_end": "2026-06-26",
+        },
+        missing_fields=("inventory_period_start",),
+    )
 
 
 def _fake_pipeline_result(tmp_path: Path, *, attachment_exists: bool = True) -> InventoryCoverPipelineRunResult:

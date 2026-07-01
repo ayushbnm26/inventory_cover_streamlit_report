@@ -182,7 +182,13 @@ def build_email_message(
         message["Cc"] = ", ".join(config.cc)
     if config.reply_to:
         message["Reply-To"] = config.reply_to
-    message.set_content(render_body(context, mail_timestamp=mail_timestamp))
+    message.set_content(
+        render_body(
+            context,
+            mail_timestamp=mail_timestamp,
+            dashboard_url=config.dashboard_url,
+        )
+    )
 
     attachment = context.team_workbook_path
     message.add_attachment(
@@ -201,30 +207,37 @@ def render_subject(context: EmailReportContext, config: EmailDeliveryConfig) -> 
     return f"{config.subject_prefix} - {report_date}"
 
 
-def render_body(context: EmailReportContext, *, mail_timestamp: str) -> str:
+def render_body(context: EmailReportContext, *, mail_timestamp: str, dashboard_url: str = "") -> str:
     rc = context.report_context
     report_date = _pick_email_report_date(context)
-    return "\n".join(
-        [
-            "Hi,",
-            "",
-            f"Please find attached the Inventory Cover Report for {report_date}.",
-            "",
-            "The report has been generated from the latest available source files and current run artifacts.",
-            "Source coverage:",
-            f"- Sales period: {rc['sales_period_start']} to {rc['sales_period_end']}",
-            f"- Sales report updated: {rc['sales_report_updated_date']}",
-            f"- Inventory report updated: {rc['inventory_report_updated_date']}",
-            "- B2B dispatch: current run date with a 2-day lookback window",
-            "",
-            f"Attachment: {context.team_workbook_name}",
-            f"Generated at: {context.generated_at}",
-            "",
-            "Regards,",
-            "Ayush Kumar",
-            "",
-        ]
-    )
+    lines = [
+        "Hi,",
+        "",
+        f"Please find attached the Inventory Cover Report for {report_date}.",
+        "",
+        "The report has been generated from the latest available source files and current run artifacts.",
+        "Source coverage:",
+        f"- Sales period: {rc['sales_period_start']} to {rc['sales_period_end']}",
+        f"- Sales report updated: {rc['sales_report_updated_date']}",
+        f"- Inventory report updated: {rc['inventory_report_updated_date']}",
+        "- B2B dispatch: current run date with a 2-day lookback window",
+        "",
+        f"Attachment: {context.team_workbook_name}",
+        f"Generated at: {context.generated_at}",
+    ]
+    if dashboard_url.strip():
+        lines.extend(
+            [
+                "",
+                f"Dashboard view: {dashboard_url.strip()}",
+                (
+                    "The attached Excel workbook remains the official working report; "
+                    "the dashboard is provided as a read-only visual summary."
+                ),
+            ]
+        )
+    lines.extend(["", "Regards,", "Ayush Kumar", ""])
+    return "\n".join(lines)
 
 
 def _pick_email_report_date(context: EmailReportContext) -> str:
@@ -303,6 +316,7 @@ def _audit_payload(
         "subject": subject,
         "attachment_path": str(context.team_workbook_path),
         "attachment_exists": context.team_workbook_path.exists(),
+        "dashboard_url": config.dashboard_url,
         "generated_at": context.generated_at,
         "mail_attempted_at": attempted_at,
         "mail_sent_at": sent_at,

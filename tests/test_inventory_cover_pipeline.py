@@ -392,7 +392,8 @@ def test_team_and_backend_sheets_present(tmp_path: Path) -> None:
         assert sheet in backend
 
 
-def test_cli_run_inventory_cover(tmp_path: Path) -> None:
+def test_cli_run_inventory_cover(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GDRIVE_ENABLED", "false")
     config = make_sources(
         tmp_path,
         sales_rows=[_full_window_sales("A1", 30)],
@@ -411,7 +412,8 @@ def test_cli_run_inventory_cover(tmp_path: Path) -> None:
     assert rc == 0
 
 
-def test_cli_run_full_inventory_cover_skip_sources(tmp_path: Path) -> None:
+def test_cli_run_full_inventory_cover_skip_sources(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GDRIVE_ENABLED", "false")
     config = make_sources(
         tmp_path,
         sales_rows=[_full_window_sales("A1", 30)],

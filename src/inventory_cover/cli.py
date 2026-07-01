@@ -14,11 +14,17 @@ from typing import Any, Callable
 
 from inventory_cover.config import (
     B2BDispatchPipelineConfig,
+    GoogleDriveReportConfig,
     InventoryCoverPipelineConfig,
     PipelineConfig,
     SalesInventoryPipelineConfig,
+    google_drive_report_config_from_values,
 )
 from inventory_cover.exceptions import PipelineError
+from inventory_cover.io.google_drive_report_store import (
+    GoogleDriveUploadSummary,
+    upload_inventory_cover_reports_to_drive,
+)
 from inventory_cover.pipelines.b2b_dispatch_pipeline import B2BDispatchPipeline
 from inventory_cover.pipelines.inventory_cover_pipeline import InventoryCoverPipeline
 from inventory_cover.pipelines.po_items_pipeline import PoItemsPipeline
@@ -282,6 +288,17 @@ def run_inventory_cover_from_args(args: argparse.Namespace) -> int:
     print(f"Products: {result.product_count}")
     print(f"Validation issues: {result.validation_issue_count}")
     print(f"Warnings: {result.warning_count}")
+    drive_upload = _maybe_upload_inventory_cover_to_drive(result)
+    if drive_upload is not None:
+        print(f"Google Drive upload status: {drive_upload.status}")
+        print(f"Google Drive upload audit: {drive_upload.audit_file}")
+        print(f"Google Drive upload log: {drive_upload.log_file}")
+        for upload in drive_upload.uploads:
+            print(
+                "Google Drive "
+                f"{upload.artifact}: {upload.action} {upload.drive_file_name} "
+                f"(file_id={upload.metadata.file_id})"
+            )
     if getattr(args, "send_email", False):
         try:
             email_config = EmailDeliveryConfig.from_environment(env_file=args.email_env_file)
@@ -297,6 +314,24 @@ def run_inventory_cover_from_args(args: argparse.Namespace) -> int:
             print(f"ERROR: Email delivery failed: {exc}", file=sys.stderr)
             return 1
     return 0
+
+
+def _maybe_upload_inventory_cover_to_drive(
+    result: Any,
+) -> GoogleDriveUploadSummary | None:
+    config = _google_drive_report_config_from_environment()
+    if not config.enabled:
+        return None
+    upload = upload_inventory_cover_reports_to_drive(result, config)
+    if upload.status == "FAILED":
+        print(
+            "WARNING: Google Drive upload failed after report generation. "
+            "Pipeline outputs and email attachment behavior are preserved by configuration.",
+            file=sys.stderr,
+        )
+        if upload.error_message_sanitized:
+            print(f"WARNING: Google Drive upload error: {upload.error_message_sanitized}", file=sys.stderr)
+    return upload
 
 
 def _stage_input_folder(folder: Path, sources: list[Path], args: argparse.Namespace) -> tuple[Path, list[tuple[Path, Path]]]:
@@ -580,6 +615,11 @@ def _env_config_value(env_key: str) -> str | None:
     if env_key in os.environ:
         return os.environ.get(env_key)
     return _project_dotenv_values().get(env_key)
+
+
+def _google_drive_report_config_from_environment() -> GoogleDriveReportConfig:
+    values = {**_project_dotenv_values(), **os.environ}
+    return google_drive_report_config_from_values(values)
 
 
 def _project_dotenv_values() -> dict[str, str]:

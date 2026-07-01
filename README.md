@@ -381,6 +381,126 @@ Troubleshooting:
 | `SMTP_RECIPIENT_REJECTED` | Recipient blocked or malformed | Check `REPORT_EMAIL_TO`, `REPORT_EMAIL_CC`, and `REPORT_EMAIL_BCC`. |
 | `Attachment does not exist` | Report generation did not produce the run workbook | Inspect the Pipeline 4 output path and run log. |
 
+## Google Drive + Streamlit Dashboard Deployment
+
+Google Drive is used as the handoff layer between the local reporting pipeline and Streamlit Community Cloud. The local pipeline still generates the official Excel report exactly as before. When Drive upload is enabled, the latest report is uploaded or replaced in a private Drive folder. The Streamlit dashboard then reads that latest workbook from Drive at runtime.
+
+Streamlit Community Cloud cannot read files that exist only on your laptop, including `data/processed/...` outputs. Do not commit generated reports or raw business files to solve that problem. Upload the official latest workbook to Drive instead.
+
+The Drive folder for this dashboard is:
+
+```text
+159xM64Uuiat-NEA8sFmkRNdj7nCGlIrr
+```
+
+### Local Google Drive Setup
+
+1. In Google Cloud, enable the Google Drive API for the project.
+2. Create a service account for report publishing.
+3. Create and download a service account JSON key.
+4. Save the key locally at:
+
+```text
+secrets/google_drive/service_account.json
+```
+
+5. Open the Drive folder and share it with the service account email as Editor.
+6. Keep the folder restricted/private. Share it only with the service account and required human users.
+7. Never commit `.env`, `.streamlit/secrets.toml`, service account JSON, Google OAuth credentials, token files, generated Excel reports, raw inputs, logs, or run folders.
+
+Create or update the local `.env` with placeholders or private values outside Git:
+
+```text
+GDRIVE_ENABLED=true
+GDRIVE_FOLDER_ID=159xM64Uuiat-NEA8sFmkRNdj7nCGlIrr
+GDRIVE_SERVICE_ACCOUNT_JSON_PATH=secrets/google_drive/service_account.json
+GDRIVE_SERVICE_ACCOUNT_JSON=
+GDRIVE_REPORT_FILE_NAME=Inventory_Cover_Report_latest.xlsx
+GDRIVE_AUDIT_FILE_NAME=Inventory_Cover_Backend_Audit_latest.xlsx
+GDRIVE_UPLOAD_AUDIT=true
+GDRIVE_FAIL_ON_UPLOAD_ERROR=false
+INVENTORY_DASHBOARD_URL=<streamlit-dashboard-url>
+```
+
+`GDRIVE_ENABLED=false` is the default. When disabled, no Drive service is built and the backend pipeline continues to work locally. When `GDRIVE_FAIL_ON_UPLOAD_ERROR=false`, report generation remains successful even if Drive upload fails; a Drive upload audit is written under the run folder. Set `GDRIVE_FAIL_ON_UPLOAD_ERROR=true` only when the run must fail on upload errors.
+
+Run the complete pipeline and upload the latest report after Pipeline 4 succeeds:
+
+```bash
+python -m inventory_cover.cli run-full-inventory-cover --b2b-source google-sheets --send-email
+```
+
+A dry-run email command still works and preserves the Excel attachment behavior:
+
+```bash
+python -m inventory_cover.cli run-full-inventory-cover --b2b-source google-sheets --send-email --email-dry-run
+```
+
+After a successful Drive upload, confirm these stable filenames are present in the Drive folder:
+
+```text
+Inventory_Cover_Report_latest.xlsx
+Inventory_Cover_Backend_Audit_latest.xlsx
+```
+
+The Drive upload writes:
+
+```text
+runs/<RUN_ID>/notifications/google_drive_upload.json
+runs/<RUN_ID>/logs/google_drive_upload.log
+```
+
+### Streamlit Community Cloud Setup
+
+Deploy this repository in Streamlit Community Cloud and select this entrypoint:
+
+```text
+streamlit_app.py
+```
+
+Configure app secrets in Streamlit Cloud's Advanced settings. For local dashboard development, copy `.streamlit/secrets.toml.example` to `.streamlit/secrets.toml` and keep it private.
+
+```toml
+APP_PASSWORD = "<dashboard-password>"
+GDRIVE_FOLDER_ID = "159xM64Uuiat-NEA8sFmkRNdj7nCGlIrr"
+GDRIVE_REPORT_FILE_NAME = "Inventory_Cover_Report_latest.xlsx"
+
+[gdrive_service_account]
+type = "service_account"
+project_id = "<project-id>"
+private_key_id = "<private-key-id>"
+private_key = "-----BEGIN PRIVATE KEY-----\n<private-key>\n-----END PRIVATE KEY-----\n"
+client_email = "<service-account-email>"
+client_id = "<client-id>"
+auth_uri = "https://accounts.google.com/o/oauth2/auth"
+token_uri = "https://oauth2.googleapis.com/token"
+auth_provider_x509_cert_url = "https://www.googleapis.com/oauth2/v1/certs"
+client_x509_cert_url = "<client-cert-url>"
+```
+
+The dashboard is password-protected and read-only. It downloads `Inventory_Cover_Report_latest.xlsx` from Google Drive, reads the workbook in memory, shows Drive modified time and file metadata, renders KPIs, risk buckets, priority rows, filters, charts, no-sales rows, audit fields when available, and provides an Excel download of the official workbook.
+
+The final dashboard updates by reading the latest file from Google Drive. It does not update from local generated files. Use the Refresh button to bypass the Streamlit cache after a new upload.
+
+To include the dashboard link in automated email, set:
+
+```text
+INVENTORY_DASHBOARD_URL=<streamlit-dashboard-url>
+```
+
+When this value is unset, email body behavior remains effectively unchanged. When it is set, the email includes the dashboard URL and notes that the attached Excel workbook remains the official working report.
+
+Troubleshooting:
+
+| Symptom | Likely cause | Action |
+| --- | --- | --- |
+| `GDRIVE_SERVICE_ACCOUNT_FILE_MISSING` | Local key path is wrong or absent | Save the key at `secrets/google_drive/service_account.json` or set `GDRIVE_SERVICE_ACCOUNT_JSON_PATH`. |
+| `GDRIVE_ACCESS_DENIED` | Folder is not shared with the service account | Share the Drive folder with the service account email as Editor. |
+| `GDRIVE_REPORT_FILE_MISSING` | Dashboard cannot find the stable latest filename | Run the local pipeline with Drive upload enabled and verify the filename in Drive. |
+| Dashboard password error | `APP_PASSWORD` is missing | Add `APP_PASSWORD` to Streamlit secrets. |
+| Invalid workbook error | Drive file is not the official Excel report | Upload `Inventory_Cover_Report_latest.xlsx` generated by Pipeline 4. |
+| Dashboard shows older data | Streamlit cache has not refreshed or upload failed | Press Refresh and inspect `google_drive_upload.json`. |
+
 Source-failure behaviour for the full command is configurable:
 
 ```bash
@@ -695,9 +815,11 @@ context_dumps/
 *.xlsm
 *.log
 .env
+.streamlit/secrets.toml
+secrets/
 ```
 
-Do not commit raw business Excel files.
+Do not commit raw business Excel files, generated reports, service account JSON, OAuth credentials, token files, or local Streamlit secrets.
 
 ## Context Dump
 
