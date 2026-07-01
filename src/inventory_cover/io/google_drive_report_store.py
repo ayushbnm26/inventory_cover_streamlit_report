@@ -211,10 +211,82 @@ class GoogleDriveReportStore:
             ) from exc
 
     @classmethod
+    def from_oauth_user(
+        cls,
+        *,
+        credentials_path: Path,
+        token_path: Path,
+        scopes: tuple[str, ...],
+    ) -> "GoogleDriveReportStore":
+        """Build a Drive store from a local OAuth Desktop client and user token."""
+
+        credentials_path = Path(credentials_path)
+        token_path = Path(token_path)
+        if not credentials_path.exists():
+            raise GoogleDriveReportStoreError(
+                f"Google Drive OAuth credentials file is missing: {credentials_path}",
+                issue_type="GDRIVE_OAUTH_CREDENTIALS_FILE_MISSING",
+                classification="configuration",
+            )
+        try:
+            from google.auth.exceptions import RefreshError, TransportError
+            from google.auth.transport.requests import Request
+            from google.oauth2.credentials import Credentials
+            from google_auth_oauthlib.flow import InstalledAppFlow
+            from googleapiclient.discovery import build
+        except ImportError as exc:
+            raise GoogleDriveReportStoreError(
+                "Google Drive OAuth dependencies are not installed. Run `python -m pip install -e .` first.",
+                issue_type="GDRIVE_DEPENDENCY_MISSING",
+                classification="dependency",
+            ) from exc
+
+        requested_scopes = list(scopes)
+        credentials = None
+        try:
+            if token_path.exists():
+                credentials = Credentials.from_authorized_user_file(str(token_path), requested_scopes)
+                if credentials and not credentials.has_scopes(requested_scopes):
+                    credentials = None
+            if credentials and credentials.expired and credentials.refresh_token:
+                credentials.refresh(Request())
+            if not credentials or not credentials.valid:
+                flow = InstalledAppFlow.from_client_secrets_file(str(credentials_path), requested_scopes)
+                credentials = flow.run_local_server(port=0)
+            token_path.parent.mkdir(parents=True, exist_ok=True)
+            token_path.write_text(credentials.to_json(), encoding="utf-8")
+            service = build("drive", "v3", credentials=credentials, cache_discovery=False)
+            return cls(service)
+        except RefreshError as exc:
+            raise GoogleDriveReportStoreError(
+                "Google Drive OAuth token refresh failed. Delete the Drive token file and re-authorize.",
+                issue_type="GDRIVE_OAUTH_TOKEN_ERROR",
+                classification="oauth",
+            ) from exc
+        except TransportError as exc:
+            raise GoogleDriveReportStoreError(
+                f"Google Drive OAuth transport failed: {_classify_exception_message(exc)}",
+                issue_type="GDRIVE_TRANSPORT_FAILURE",
+                classification="transport",
+            ) from exc
+        except Exception as exc:
+            raise GoogleDriveReportStoreError(
+                f"Google Drive OAuth authentication failed: {_classify_exception_message(exc)}",
+                issue_type="GDRIVE_AUTHENTICATION_FAILED",
+                classification="authentication",
+            ) from exc
+
+    @classmethod
     def from_config(cls, config: GoogleDriveReportConfig) -> "GoogleDriveReportStore":
-        """Build a Drive store using JSON content first, then the configured file path."""
+        """Build a Drive store from the configured upload authentication mode."""
 
         resolved = config.resolved()
+        if resolved.auth_mode == "oauth_user":
+            return cls.from_oauth_user(
+                credentials_path=resolved.oauth_credentials_path,
+                token_path=resolved.oauth_token_path,
+                scopes=resolved.scopes,
+            )
         if resolved.service_account_json.strip():
             return cls.from_service_account_info(resolved.service_account_json, scopes=resolved.scopes)
         return cls.from_service_account_file(resolved.service_account_json_path, scopes=resolved.scopes)
@@ -512,12 +584,14 @@ def _download_media_request(request: Any) -> bytes:
 
 def _drive_api_error(exc: Exception, prefix: str) -> GoogleDriveReportStoreError:
     status = getattr(getattr(exc, "resp", None), "status", None)
-    classification = _classify_google_status(status)
+    reason = _google_error_reason(exc)
+    classification = "storage_quota" if reason == "storageQuotaExceeded" else _classify_google_status(status)
     issue_type = {
         "authentication": "GDRIVE_AUTHENTICATION_FAILED",
         "access": "GDRIVE_ACCESS_DENIED",
         "not_found": "GDRIVE_FOLDER_OR_FILE_NOT_FOUND",
         "quota": "GDRIVE_API_QUOTA_FAILURE",
+        "storage_quota": "GDRIVE_STORAGE_QUOTA_EXCEEDED",
         "transport": "GDRIVE_TRANSPORT_FAILURE",
     }.get(classification, "GDRIVE_API_FAILURE")
     return GoogleDriveReportStoreError(
@@ -539,6 +613,22 @@ def _classify_google_status(status: Any) -> str:
     if isinstance(status, int) and status >= 500:
         return "transport"
     return "api"
+
+
+def _google_error_reason(exc: Exception) -> str:
+    content = getattr(exc, "content", b"")
+    if isinstance(content, bytes):
+        content = content.decode("utf-8", errors="replace")
+    if not isinstance(content, str) or not content.strip():
+        return ""
+    try:
+        payload = json.loads(content)
+    except json.JSONDecodeError:
+        return ""
+    errors = payload.get("error", {}).get("errors", [])
+    if errors and isinstance(errors[0], Mapping):
+        return str(errors[0].get("reason") or "")
+    return str(payload.get("error", {}).get("reason") or "")
 
 
 def _require_value(value: str, name: str) -> None:

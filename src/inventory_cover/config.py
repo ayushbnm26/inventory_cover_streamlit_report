@@ -9,6 +9,12 @@ from typing import Mapping
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+GDRIVE_SERVICE_ACCOUNT_DEFAULT_PATH = Path("secrets") / "google_drive" / "service_account.json"
+GDRIVE_SERVICE_ACCOUNT_COMPATIBILITY_PATHS = (
+    Path("secrets") / "google" / "google_drive" / "service_account.json",
+)
+GDRIVE_OAUTH_CREDENTIALS_DEFAULT_PATH = Path("secrets") / "google_oauth" / "credentials.json"
+GDRIVE_OAUTH_TOKEN_DEFAULT_PATH = Path("secrets") / "google_oauth" / "drive_token.json"
 
 
 @dataclass(frozen=True)
@@ -221,9 +227,12 @@ class GoogleDriveReportConfig:
 
     project_root: Path = PROJECT_ROOT
     enabled: bool = False
+    auth_mode: str = "service_account"
     folder_id: str = ""
-    service_account_json_path: Path = PROJECT_ROOT / "secrets" / "google_drive" / "service_account.json"
+    service_account_json_path: Path = PROJECT_ROOT / GDRIVE_SERVICE_ACCOUNT_DEFAULT_PATH
     service_account_json: str = ""
+    oauth_credentials_path: Path = PROJECT_ROOT / GDRIVE_OAUTH_CREDENTIALS_DEFAULT_PATH
+    oauth_token_path: Path = PROJECT_ROOT / GDRIVE_OAUTH_TOKEN_DEFAULT_PATH
     report_file_name: str = "Inventory_Cover_Report_latest.xlsx"
     audit_file_name: str = "Inventory_Cover_Backend_Audit_latest.xlsx"
     upload_audit: bool = False
@@ -239,12 +248,24 @@ class GoogleDriveReportConfig:
                 return path
             return (self.project_root / path).resolve()
 
+        service_account_json_path = resolve(self.service_account_json_path)
+        default_service_account_path = resolve(GDRIVE_SERVICE_ACCOUNT_DEFAULT_PATH)
+        if service_account_json_path == default_service_account_path and not service_account_json_path.exists():
+            for candidate in GDRIVE_SERVICE_ACCOUNT_COMPATIBILITY_PATHS:
+                candidate_path = resolve(candidate)
+                if candidate_path.is_file():
+                    service_account_json_path = candidate_path
+                    break
+
         return GoogleDriveReportConfig(
             project_root=Path(self.project_root).resolve(),
             enabled=self.enabled,
+            auth_mode=_normalize_auth_mode(self.auth_mode),
             folder_id=self.folder_id,
-            service_account_json_path=resolve(self.service_account_json_path),
+            service_account_json_path=service_account_json_path,
             service_account_json=self.service_account_json,
+            oauth_credentials_path=resolve(self.oauth_credentials_path),
+            oauth_token_path=resolve(self.oauth_token_path),
             report_file_name=self.report_file_name,
             audit_file_name=self.audit_file_name,
             upload_audit=self.upload_audit,
@@ -264,12 +285,21 @@ def google_drive_report_config_from_values(
     return GoogleDriveReportConfig(
         project_root=project_root,
         enabled=_parse_config_bool(values.get("GDRIVE_ENABLED"), default=default.enabled),
+        auth_mode=_clean_config_value(values.get("GDRIVE_AUTH_MODE")) or default.auth_mode,
         folder_id=_clean_config_value(values.get("GDRIVE_FOLDER_ID")),
         service_account_json_path=Path(
             _clean_config_value(values.get("GDRIVE_SERVICE_ACCOUNT_JSON_PATH"))
-            or Path("secrets") / "google_drive" / "service_account.json"
+            or GDRIVE_SERVICE_ACCOUNT_DEFAULT_PATH
         ),
         service_account_json=_clean_config_value(values.get("GDRIVE_SERVICE_ACCOUNT_JSON")),
+        oauth_credentials_path=Path(
+            _clean_config_value(values.get("GDRIVE_OAUTH_CREDENTIALS_PATH"))
+            or GDRIVE_OAUTH_CREDENTIALS_DEFAULT_PATH
+        ),
+        oauth_token_path=Path(
+            _clean_config_value(values.get("GDRIVE_OAUTH_TOKEN_PATH"))
+            or GDRIVE_OAUTH_TOKEN_DEFAULT_PATH
+        ),
         report_file_name=(
             _clean_config_value(values.get("GDRIVE_REPORT_FILE_NAME")) or default.report_file_name
         ),
@@ -299,3 +329,10 @@ def _parse_config_bool(value: object, *, default: bool) -> bool:
     if lowered in {"0", "false", "no", "n", "off"}:
         return False
     return default
+
+
+def _normalize_auth_mode(value: object) -> str:
+    text = _clean_config_value(value).lower().replace("-", "_")
+    if text in {"oauth", "oauth_user", "user_oauth"}:
+        return "oauth_user"
+    return "service_account"
